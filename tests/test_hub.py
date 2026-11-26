@@ -981,3 +981,91 @@ def test_status_page_auth_and_content(tmp_path, monkeypatch):
         assert ok.status_code == 200
         assert "2020-01-01 (expired)" in ok.text
         assert "todoist_find" in ok.text
+
+
+# -- Upstream OAuth corrections ------------------------------------------
+
+_MCP = "https://mcp.example.com/mcp"
+_AS = "https://auth.example.com"
+
+
+def _oauth_with_tokens(transport):
+    from key_value.aio.stores.memory import MemoryStore
+    from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+
+    spec = {"url": _MCP, "callback_port": 1, "scopes": ["mcp:read"]}
+    auth = hub.oauth_for("cal", spec, MemoryStore(), "t", interactive=False)
+    auth._bind(_MCP)
+    auth.discovery_transport = transport
+    auth.context.client_info = OAuthClientInformationFull(
+        client_id="client-1", redirect_uris=["http://localhost:1/callback"])
+    auth.context.current_tokens = OAuthToken(
+        access_token="a", token_type="Bearer", refresh_token="r",
+        expires_in=1)
+    return auth
+
+
+def _metadata_server(seen):
+    import httpx2
+
+    def handle(request):
+        url = str(request.url)
+        seen.append(url)
+        if url == ("https://mcp.example.com/.well-known/"
+                   "oauth-protected-resource/mcp"):
+            return httpx2.Response(200, json={
+                "resource": _MCP, "authorization_servers": [_AS]})
+        if url == f"{_AS}/.well-known/oauth-authorization-server":
+            return httpx2.Response(200, json={
+                "issuer": _AS,
+                "authorization_endpoint": f"{_AS}/oauth/authorize/",
+                "token_endpoint": f"{_AS}/oauth/token/",
+                "response_types_supported": ["code"],
+            })
+        return httpx2.Response(404)
+
+    return httpx2.MockTransport(handle)
+
+
+@pytest.mark.filterwarnings("ignore:Using in-memory token storage")
+def test_refresh_after_restart_uses_the_discovered_token_endpoint():
+    # A restarted hub holds tokens but no metadata; the SDK alone would
+    # post the refresh to https://mcp.example.com/token.
+    seen = []
+    auth = _oauth_with_tokens(_metadata_server(seen))
+    assert auth.context.oauth_metadata is None
+    request = asyncio.run(auth._refresh_token())
+    assert str(request.url) == f"{_AS}/oauth/token/"
+    assert seen and all(u.startswith("https://") for u in seen)
+
+
+@pytest.mark.filterwarnings("ignore:Using in-memory token storage")
+def test_refresh_falls_back_when_discovery_finds_nothing():
+    import httpx2
+
+    auth = _oauth_with_tokens(
+        httpx2.MockTransport(lambda request: httpx2.Response(404)))
+    request = asyncio.run(auth._refresh_token())
+    assert str(request.url) == "https://mcp.example.com/token"
+
+
+@pytest.mark.filterwarnings("ignore:Using in-memory token storage")
+def test_sign_in_requests_only_the_configured_scopes(monkeypatch):
+    # The SDK sets the scope to everything the server advertises just
+    # before it builds the authorization URL.
+    captured = {}
+
+    async def fake_perform(self):
+        captured["scope"] = self.context.client_metadata.scope
+        return "done"
+
+    monkeypatch.setattr(hub.OAuth, "_perform_authorization", fake_perform)
+    for interactive in (True, False):
+        auth = hub.oauth_for(
+            "cal", {"url": _MCP, "callback_port": 1,
+                    "scopes": ["mcp:read"]},
+            None, "t", interactive=interactive)
+        auth._bind(_MCP)
+        auth.context.client_metadata.scope = "mcp:read mcp:write"
+        assert asyncio.run(auth._perform_authorization()) == "done"
+        assert captured["scope"] == "mcp:read"

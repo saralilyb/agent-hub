@@ -786,14 +786,88 @@ class Policy(Middleware):
 # -- Upstreams --------------------------------------------------------------
 
 
-class HubOAuth(OAuth):
+class ScopedOAuth(OAuth):
+    """Client OAuth with two corrections to the MCP SDK (mcp 2.3).
+
+    Scopes: during sign-in the SDK replaces the client's scopes with
+    whatever the server advertises (WWW-Authenticate, then the resource
+    metadata), so a configured `scopes = ["mcp:read"]` was silently
+    widened. The configured scopes are put back just before the
+    authorization URL is built.
+
+    Refresh: the SDK refreshes before it has discovered the
+    authorization server, and without discovered metadata it posts to
+    `<origin>/token`. A hub restarted with stored tokens therefore sent
+    every refresh to a guessed URL, which fails wherever the token
+    endpoint lives elsewhere, and then demanded a new sign-in. Discovery
+    runs first.
+    """
+
+    upstream_name = "<upstream>"
+    pinned_scopes = None
+    discovery_transport = None  # tests inject an httpx2 transport
+
+    async def _perform_authorization(self):
+        if self.pinned_scopes:
+            self.context.client_metadata.scope = " ".join(self.pinned_scopes)
+        return await super()._perform_authorization()
+
+    async def _refresh_token(self):
+        if self.context.oauth_metadata is None:
+            try:
+                await self._discover_metadata()
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "%s: metadata discovery before refresh failed: %s",
+                    self.upstream_name, type(exc).__name__)
+        return await super()._refresh_token()
+
+    async def _discover_metadata(self):
+        """Fill in the authorization server metadata, as the SDK's own
+        flow would after a 401, using the SDK's helpers and checks."""
+        import httpx2
+        from mcp.client.auth import utils as u
+
+        ctx = self.context
+        async with httpx2.AsyncClient(
+                transport=self.discovery_transport, timeout=30,
+                follow_redirects=False) as http:
+            for url in u.build_protected_resource_metadata_discovery_urls(
+                    None, ctx.server_url):
+                response = await http.send(u.create_oauth_metadata_request(url))
+                prm = await u.handle_protected_resource_response(response)
+                if prm:
+                    await self._validate_resource_match(prm)
+                    ctx.protected_resource_metadata = prm
+                    ctx.auth_server_url = self._select_authorization_server(
+                        [str(s) for s in prm.authorization_servers])
+                    break
+            expected = self._expected_issuer()
+            if ctx.client_info is not None and not u.credentials_match_issuer(
+                    ctx.client_info, expected, ctx.client_metadata_url):
+                # Never send a refresh token to a different issuer.
+                raise RuntimeError("authorization server changed")
+            as_urls = u.build_oauth_authorization_server_metadata_discovery_urls
+            for url in as_urls(ctx.auth_server_url, ctx.server_url):
+                response = await http.send(u.create_oauth_metadata_request(url))
+                ok, asm = await u.handle_auth_metadata_response(response)
+                if not ok:
+                    break
+                if asm:
+                    if ctx.auth_server_url is None and u.issuers_match(
+                            str(asm.issuer), expected):
+                        expected = str(asm.issuer)
+                    u.validate_metadata_issuer(asm, expected)
+                    ctx.oauth_metadata = asm
+                    return
+
+
+class HubOAuth(ScopedOAuth):
     """OAuth that never opens a browser from the running hub.
 
     A missing or revoked grant makes that one upstream fail with a clear
     message. Sign-in happens only through `hub.py authorize`.
     """
-
-    upstream_name = "<upstream>"
 
     async def redirect_handler(self, authorization_url):
         raise RuntimeError(
@@ -820,21 +894,15 @@ def token_store(config):
 
 
 def oauth_for(name, spec, store, client_name, interactive):
-    if interactive:
-        auth = OAuth(
-            client_name=client_name,
-            token_storage=store,
-            callback_port=spec["callback_port"],
-            scopes=spec.get("scopes"),
-        )
-    else:
-        auth = HubOAuth(
-            client_name=client_name,
-            token_storage=store,
-            callback_port=spec["callback_port"],
-            scopes=spec.get("scopes"),
-        )
-        auth.upstream_name = name
+    cls = ScopedOAuth if interactive else HubOAuth
+    auth = cls(
+        client_name=client_name,
+        token_storage=store,
+        callback_port=spec["callback_port"],
+        scopes=spec.get("scopes"),
+    )
+    auth.upstream_name = name
+    auth.pinned_scopes = spec.get("scopes")
     return auth
 
 
@@ -1316,7 +1384,13 @@ async def authorize(config, name):
     transport = StreamableHttpTransport(url, auth=auth)
     async with Client(transport) as client:
         tools = await client.list_tools()
-    print(f"{name}: signed in; {len(tools)} tools visible upstream")
+    granted = getattr(auth.context.current_tokens, "scope", None)
+    print(f"{name}: signed in; {len(tools)} tools visible upstream; "
+          f"granted scope: {granted or 'not stated'}")
+    wanted = set(spec.get("scopes") or [])
+    if wanted and granted and not set(granted.split()) <= wanted:
+        print(f"{name}: warning: the server granted more than the "
+              f"configured scopes {sorted(wanted)}", file=sys.stderr)
 
 
 async def list_upstream_tools(config, only=None):
