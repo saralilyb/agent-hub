@@ -116,6 +116,14 @@ tools and expiry dates, and the last 100 audit events.
 with a `callback_port` and optional `scopes`. Tools appear to agents as
 `NAME_tool`, so `NAME` must not contain `_`.
 
+`scopes` decides what the hub's own grant at the upstream can do; it is
+not per agent. Without it, the hub requests every scope the server
+advertises. The design keeps the hub as the gate: grant the hub what any
+agent may eventually need, and limit each agent with groups and
+`read_only`. Set narrower `scopes` only when no agent should ever have
+more, as a second limit. `agent-hub authorize` prints the scope the
+server actually granted.
+
 **`[groups.NAME]`**: `allow` (exact tool names), `groups` (other groups to
 include), `access = "read"` to vouch that every tool in the group only
 reads. A read group may include only other read groups. `agent-hub tools`
