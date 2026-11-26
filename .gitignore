@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+# Instance config and state belong outside the checkout
+# (~/.config/agent-hub/); these keep a stray copy from being committed.
+private/
+/hub.toml
+secrets.env.refs
+*.env.refs
+op.env

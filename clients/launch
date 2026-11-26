@@ -1,0 +1,52 @@
+#!/usr/bin/env sh
+# Launch an agent with only its own hub token from 1Password.
+# Usage: clients/launch <refs-file> <command> [args...]
+#
+# <refs-file> holds lines such as
+#   AGENT_HUB_TOKEN_MYAGENT=op://vault/item/password
+# Every inherited variable outside a short allowlist is dropped, so the
+# agent gets no secrets from whoever started it; the only hub tokens it
+# keeps are those named in <refs-file>. Token values never appear in argv.
+# Set AGENT_HUB_OP_ENV to a file to source before `op run` (for example
+# one that sets OP_SERVICE_ACCOUNT_TOKEN).
+set -eu
+if [ $# -lt 2 ]; then
+	awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' \
+	    "$0" >&2
+	exit 2
+fi
+refs=$1
+shift
+names=$(sed -n 's/^\(AGENT_HUB_TOKEN_[A-Z0-9_]*\)=.*/\1/p' "$refs" |
+    tr '\n' ' ')
+[ -n "$names" ] || {
+	echo "launch: no AGENT_HUB_TOKEN_* line in $refs" >&2
+	exit 1
+}
+if [ -n "${AGENT_HUB_OP_ENV:-}" ]; then
+	set -a
+	# shellcheck source=/dev/null
+	. "$AGENT_HUB_OP_ENV"
+	set +a
+fi
+# shellcheck disable=SC2016  # the inner script expands in the child shell
+exec op run --env-file "$refs" -- sh -c '
+	keep=" $1 "
+	shift
+	for v in $(env | sed -n "s/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p"); do
+		case $v in
+		HOME | USER | LOGNAME | PATH | SHELL | TERM | LANG | LC_* | TMPDIR)
+			continue ;;
+		esac
+		case $keep in
+		*" $v "*) continue ;;
+		esac
+		unset "$v" 2>/dev/null || true
+	done
+	# Agents that take a whole header value (Autolith) read
+	# AGENT_HUB_BEARER_<AGENT>; derived here so 1Password holds one form.
+	for v in $keep; do
+		export "AGENT_HUB_BEARER_${v#AGENT_HUB_TOKEN_}=Bearer $(printenv "$v")"
+	done
+	exec "$@"
+' sh "$names" "$@"

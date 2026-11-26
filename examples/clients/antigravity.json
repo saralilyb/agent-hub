@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "hub": {
+      "command": "/path/to/agent-hub/.venv/bin/python",
+      "args": [
+        "/path/to/agent-hub/hub.py",
+        "bridge",
+        "--url", "http://127.0.0.1:18797/mcp",
+        "--keychain", "agent-hub-antigravity"
+      ]
+    }
+  }
+}

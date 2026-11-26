@@ -1,0 +1,17 @@
+# gitleaks (CI pins 8.30.1): default rules, minus two known non-secrets.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "token_sha256 values are SHA-256 hashes of agent tokens"
+regexTarget = "line"
+regexes = ['''token_sha256\s*=\s*\[?\s*"[0-9a-f]{64}"''']
+
+[[allowlists]]
+description = "fake secrets the tests plant to prove redaction"
+regexes = [
+    '''SUPERSECRET_LEAK_TEST_TOKEN_999''',
+    '''LEAKME999''',
+    '''subl_secret_val\+123/456''',
+    '''abcdefghijklmnopqrstuvwxyz012345''',
+]

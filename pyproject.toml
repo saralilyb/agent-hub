@@ -1,0 +1,32 @@
+[project]
+name = "agent-hub"
+version = "0.2.0"
+description = "One MCP endpoint for several agents: per-agent tokens, tool allowlists, audit"
+readme = "README.md"
+license = "ISC"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp==4.2.5",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.uv]
+package = false
+# Resolve nothing released in the 48 hours before the last lock update.
+exclude-newer = "2026-11-23T21:00:00Z"
+
+[tool.ruff]
+line-length = 80
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

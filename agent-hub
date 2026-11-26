@@ -1,0 +1,87 @@
+#!/usr/bin/env sh
+# agent-hub: run hub.py with its config, secrets and a clean environment.
+#
+# Usage: agent-hub COMMAND [ARGS...]
+#   serve              run the hub
+#   authorize UPSTREAM one-time OAuth sign-in for an upstream (browser)
+#   tools [UPSTREAM]   list upstream tools and their read-only claims
+#   check              validate the config and list agents
+#   reload             reload [agents] and [groups] in the running hub
+#   hash-token         print the SHA-256 of a token read from stdin
+#   bridge ...         stdio bridge for one agent (see README)
+#
+# The config file is $AGENT_HUB_CONFIG, else
+# ${XDG_CONFIG_HOME:-~/.config}/agent-hub/hub.toml. Files next to it:
+#   secrets.env.refs   1Password references for upstream secrets. When it
+#                      exists, `serve` and `tools` run under
+#                      `op run --env-file`, and
+#                      `authorize` gets only AGENT_HUB_OAUTH_KEY from it.
+#                      Without it, secrets must already be in the
+#                      environment.
+#   op.env             optional; sourced before `op run` (for example to
+#                      set OP_SERVICE_ACCOUNT_TOKEN). The hub process never
+#                      receives any OP_* variable.
+set -eu
+
+repo=$(cd "$(dirname "$0")" && pwd -P)
+config=${AGENT_HUB_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/agent-hub/hub.toml}
+dir=$(dirname "$config")
+refs=$dir/secrets.env.refs
+export AGENT_HUB_CONFIG="$config"
+
+usage() {
+	awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' \
+	    "$0" >&2
+	exit 2
+}
+[ $# -ge 1 ] || usage
+case $1 in -h | --help | help) usage ;; esac
+cmd=$1
+
+# Run hub.py from the repo's venv without any 1Password (OP_*) variables:
+# the service-account token, Connect settings and the like stay with `op`.
+# shellcheck disable=SC2016  # expands in the child shell
+strip='for v in $(env | sed -n "s/^\(OP_[A-Za-z0-9_]*\)=.*/\1/p"); do
+	unset "$v"
+done
+exec "$@"'
+hub() {
+	exec sh -c "$strip" sh \
+	    uv run --quiet --frozen --project "$repo" \
+	    python "$repo/hub.py" "$@"
+}
+
+case $cmd in
+serve | authorize | tools) ;;
+*) hub "$@" ;;
+esac
+
+[ -f "$refs" ] || hub "$@"
+
+command -v op >/dev/null 2>&1 || {
+	echo "agent-hub: $refs needs the 1Password CLI (op)" >&2
+	exit 1
+}
+if [ -f "$dir/op.env" ]; then
+	set -a
+	# shellcheck source=/dev/null
+	. "$dir/op.env"
+	set +a
+fi
+
+if [ "$cmd" = authorize ]; then
+	# Pass only the OAuth encryption key, not unrelated upstream secrets.
+	key=$(sed -n 's/^AGENT_HUB_OAUTH_KEY=//p' "$refs")
+	[ -n "$key" ] || {
+		echo "agent-hub: AGENT_HUB_OAUTH_KEY missing from $refs" >&2
+		exit 1
+	}
+	export AGENT_HUB_OAUTH_KEY="$key"
+	exec op run -- sh -c "$strip" sh \
+	    uv run --quiet --frozen --project "$repo" \
+	    python "$repo/hub.py" "$@"
+fi
+
+exec op run --env-file "$refs" -- \
+    sh -c "$strip" sh \
+    uv run --quiet --frozen --project "$repo" python "$repo/hub.py" "$@"

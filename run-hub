@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# Service entry point (launchd, rc.d, systemd): `agent-hub serve`.
+set -eu
+exec "$(cd "$(dirname "$0")" && pwd -P)/agent-hub" serve "$@"

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "hub": {
+      "type": "http",
+      "url": "http://127.0.0.1:18797/mcp",
+      "headers": {
+        "Authorization": "Bearer ${AGENT_HUB_TOKEN_CLAUDE}"
+      }
+    }
+  }
+}

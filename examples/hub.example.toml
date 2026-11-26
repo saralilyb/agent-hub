@@ -1,0 +1,80 @@
+# agent-hub example config. Copy to ~/.config/agent-hub/hub.toml (or point
+# $AGENT_HUB_CONFIG at it) and replace the token hashes.
+#
+# No secrets live here: upstream credentials are environment references
+# (`env:NAME`, or `${NAME}` inside a string) and agent tokens appear only
+# as SHA-256 hashes. Relative paths are relative to this file.
+
+[hub]
+name = "agent-hub"
+host = "127.0.0.1"          # loopback; put TLS in front for anything else
+port = 18797
+path = "/mcp"
+# state_dir = "~/.local/state/agent-hub"   # OAuth store and pid file
+# audit_log = "~/.local/state/agent-hub/audit.jsonl"
+oauth_key = "env:AGENT_HUB_OAUTH_KEY"      # Fernet key for the OAuth store
+
+# Optional read-only status page at /status (HTTP basic auth).
+[hub.status]
+user = "admin"
+password = "env:AGENT_HUB_STATUS_PASSWORD"
+
+
+# Upstreams. Tool names become <upstream>_<tool>, so upstream names must
+# not contain "_". `agent-hub tools` lists what each upstream offers.
+
+[upstreams.todoist]
+url = "https://ai.todoist.net/mcp"
+headers = { Authorization = "env:TODOIST_AUTH_HEADER" }
+
+# An OAuth upstream: sign in once with `agent-hub authorize sentry`.
+[upstreams.sentry]
+url = "https://mcp.sentry.dev/mcp"
+auth = "oauth"
+callback_port = 18801
+
+
+# Groups are reusable lists of exact tool names (no wildcards). A group
+# with access = "read" vouches that its tools only read: the hub then
+# advertises them as read-only and every other tool as a destructive
+# write, whatever the upstream claims.
+
+[groups.todoist-read]
+access = "read"
+allow = [
+    "todoist_find-tasks",
+    "todoist_find-tasks-by-date",
+    "todoist_find-projects",
+    "todoist_get-overview",
+    "todoist_fetch-object",
+    "todoist_user-info",
+]
+
+[groups.todoist-write]
+allow = [
+    "todoist_add-tasks",
+    "todoist_complete-tasks",
+    "todoist_update-tasks",
+]
+
+
+# Agents. Make a token with `openssl rand -hex 32` (or your password
+# manager), store it where the agent can read it, and put its hash here:
+#   agent-hub hash-token < token-file
+# token_sha256 may be a list while you rotate a token. `expires` is a TOML
+# date; from the start of that day the token stops working.
+# The hashes below are of the strings "replace-me: assistant token
+# placeholder" and "replace-me: ide token placeholder".
+
+[agents.assistant]
+token_sha256 = "9c96b43fb22d822a1d69997cde34bf78a91b5772140b6449748cb7dd2c326a97"
+groups = ["todoist-read", "todoist-write"]
+expires = 2027-06-30
+
+# A read-only agent: the hub refuses to load a config that gives it any
+# tool outside a read group.
+[agents.ide]
+token_sha256 = "010aeac21ddeee60a63fd6caaeadbd7b7f4987f6a0ac1911b3a8a0ee24ad31b4"
+groups = ["todoist-read"]
+read_only = true
+expires = 2027-06-30
